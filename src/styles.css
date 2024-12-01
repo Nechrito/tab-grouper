@@ -1,0 +1,86 @@
+body {
+    width: 300px;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 10px;
+    background-color: #f4f4f4;
+}
+
+.container {
+    background-color: white;
+    border-radius: 5px;
+    padding: 15px;
+    margin-bottom: 10px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+h2 {
+    margin-top: 0;
+    color: #333;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 5px;
+}
+
+.mappings-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}
+
+.mapping-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px;
+    border-bottom: 1px solid #eee;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+.mapping-item:hover {
+    background-color: #f0f0f0;
+}
+
+.mapping-item.selected {
+    background-color: #e6f2ff;
+}
+
+.mapping-item-domain {
+    flex-grow: 1;
+    margin-right: 10px;
+}
+
+.mapping-item-group {
+    color: #666;
+}
+
+.mapping-item-color {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+}
+
+button {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+input,
+select {
+    width: 100%;
+    padding: 8px;
+    margin-top: 5px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+}

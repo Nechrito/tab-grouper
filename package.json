@@ -1,0 +1,20 @@
+{
+    "name": "tab-grouper",
+    "version": "1.0.0",
+    "description": "Chrome extension to automatically group tabs by domain",
+    "main": "background.js",
+    "scripts": {
+        "test": "echo \"No tests specified\" && exit 0",
+        "lint": "eslint ."
+    },
+    "keywords": [
+        "chrome-extension",
+        "tab-management",
+        "productivity"
+    ],
+    "author": "Philip Lindh",
+    "license": "MIT",
+    "devDependencies": {
+        "eslint": "^8.0.0"
+    }
+}
