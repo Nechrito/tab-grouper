@@ -68,8 +68,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[Insert License - e.g., MIT]
+MIT
 
 ## Author
 
-[Your GitHub Username]
+Nechrito
