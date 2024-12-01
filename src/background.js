@@ -50,7 +50,12 @@ async function getGroupMappings() {
 
     return new Promise((resolve) => {
         chrome.storage.sync.get(["groupMappings"], (result) => {
-            cachedGroupMappings = result.groupMappings || DEFAULT_GROUPS;
+            cachedGroupMappings = result.groupMappings;
+
+            if (!cachedGroupMappings) {
+                cachedGroupMappings = {};
+            }
+
             resolve(cachedGroupMappings);
         });
     });

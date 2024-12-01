@@ -11,14 +11,6 @@ Tab Grouper is a Chrome extension that automatically groups browser tabs by doma
 - Color-coded tab groups
 - Easy-to-use popup interface for managing tab groups
 
-## Screenshots
-
-![Tab Grouper Screenshot](/path/to/tab-grouper-screenshot.png)
-
-## Demo
-
-![Tab Grouper Demo](/path/to/tab-grouper-demo.gif)
-
 ## Installation
 
 ### From Source
