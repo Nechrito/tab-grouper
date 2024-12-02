@@ -1,5 +1,9 @@
 # Tab Grouper Chrome Extension
 
+![Search Bar](./src/res/Search%20Bar.gif)
+
+<!-- ![Popup](./src/res/Popup.gif) -->
+
 ## Overview
 
 Tab Grouper is a Chrome extension that automatically groups browser tabs by domain, helping you organize your browsing experience more efficiently.

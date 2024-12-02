@@ -1,5 +1,3 @@
-// Enhanced color palette with color codes
-// Order: #d9dce0 #4fb8fe #ff767e #ffd142 #00d18f #ff70ce #d97fff #00e1ef #ffa163
 const COLOR_PALETTE = [
     { name: "Grey", value: "grey", hex: "#d9dce0" },
     { name: "Blue", value: "blue", hex: "#4fb8fe" },
@@ -59,8 +57,8 @@ document.addEventListener("DOMContentLoaded", () => {
                 const colors = result.groupColors || {};
 
                 // Cleanup domain and group name before saving
-                const cleanDomain = domain.replace(/[^\w\s.-]/g, "").trim();
-                const cleanGroupName = groupName.replace(/[^\w\s:-]/g, "").trim();
+                const cleanDomain = domain.replace(/[^\w\s.-]/g, "").trim(); // Allow dots for subdomains
+                const cleanGroupName = groupName.replace(/[^\w\s:-]/g, "").trim(); // Allow colons for grouping by URL
 
                 mappings[cleanDomain] = cleanGroupName;
 
@@ -128,9 +126,9 @@ document.addEventListener("DOMContentLoaded", () => {
 // Cleanup function for mapping display
 function cleanupMappingText(text) {
     return text
-        .normalize("NFC")
-        .replace(/[^\w\s.:-]/g, "")
-        .trim();
+        .normalize("NFC") // Normalize unicode characters
+        .replace(/[^\w\s.:-]/g, "") // Remove special characters
+        .trim(); // Trim whitespace
 }
 
 // Refresh mappings list
