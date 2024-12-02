@@ -246,8 +246,38 @@ function abbreviate(groupName) {
 const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 300);
 
 // Event Listeners with optimized handling
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === "complete") {
+        try {
+            // Check if the tab is in a group
+            if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+                // Get the domain of the current URL
+                const currentDomain = await getDomain(tab.url);
+
+                // Get the current group
+                const group = await chrome.tabGroups.get(tab.groupId);
+
+                // Check if the current domain matches the group title
+                const groupDomain = group.title.toLowerCase();
+                const normalizedCurrentDomain = currentDomain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
+
+                // If domains don't match, ungroup the tab
+                if (groupDomain !== normalizedCurrentDomain) {
+                    try {
+                        await chrome.tabs.ungroup(tabId);
+                    } catch (ungroupError) {
+                        console.error("Error ungrouping tab:", ungroupError);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error("Error checking tab group:", error);
+        }
+
+        // Use a small delay to ensure tab removal is processed
+        setTimeout(removeEmptyGroups, 100);
+
+        // Group tabs after a short delay
         debouncedGroupTabsByDomain();
     }
 });
