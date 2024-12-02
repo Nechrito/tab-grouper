@@ -1,3 +1,17 @@
+// Enhanced color palette with color codes
+// Order: #d9dce0 #4fb8fe #ff767e #ffd142 #00d18f #ff70ce #d97fff #00e1ef #ffa163
+const COLOR_PALETTE = [
+    { name: "Grey", value: "grey", hex: "#d9dce0" },
+    { name: "Blue", value: "blue", hex: "#4fb8fe" },
+    { name: "Red", value: "red", hex: "#ff767e" },
+    { name: "Yellow", value: "yellow", hex: "#ffd142" },
+    { name: "Green", value: "green", hex: "#00d18f" },
+    { name: "Pink", value: "pink", hex: "#ff70ce" },
+    { name: "Purple", value: "purple", hex: "#d97fff" },
+    { name: "Cyan", value: "cyan", hex: "#00e1ef" },
+    { name: "Orange", value: "orange", hex: "#ffa163" },
+];
+
 document.addEventListener("DOMContentLoaded", () => {
     const groupTabsBtn = document.getElementById("groupTabs");
     const ungroupTabsBtn = document.getElementById("ungroupTabs");
@@ -8,19 +22,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const currentMappings = document.getElementById("currentMappings");
     const mappingsList = document.getElementById("mappingsList");
     const removeMappingBtn = document.getElementById("removeMapping");
-
-    // Enhanced color palette with color codes
-    const COLOR_PALETTE = [
-        { name: "Blue", value: "blue", hex: "#3B82F6" },
-        { name: "Green", value: "green", hex: "#10B981" },
-        { name: "Purple", value: "purple", hex: "#8B5CF6" },
-        { name: "Red", value: "red", hex: "#EF4444" },
-        { name: "Orange", value: "orange", hex: "#F97316" },
-        { name: "Yellow", value: "yellow", hex: "#EAB308" },
-        { name: "Pink", value: "pink", hex: "#EC4899" },
-        { name: "Cyan", value: "cyan", hex: "#06B6D4" },
-        { name: "Grey", value: "grey", hex: "#6B7280" },
-    ];
 
     // Populate color select with color preview
     COLOR_PALETTE.forEach((color) => {
@@ -42,78 +43,6 @@ document.addEventListener("DOMContentLoaded", () => {
         chrome.runtime.sendMessage({ action: "ungroupTabs" });
     });
 
-    // Cleanup function for mapping display
-    function cleanupMappingText(text) {
-        return text
-            .normalize("NFC")
-            .replace(/[^\w\s.:-]/g, "")
-            .trim();
-    }
-
-    // Refresh mappings list
-    function refreshMappings() {
-        chrome.storage.sync.get(["groupMappings", "groupColors"], (result) => {
-            const mappings = result.groupMappings || {};
-            const colors = result.groupColors || {};
-
-            // Clear existing mappings
-            mappingsList.innerHTML = "";
-            currentMappings.innerHTML = "";
-
-            for (const [domain, group] of Object.entries(mappings)) {
-                // Create mapping item for visual list
-                const mappingItem = document.createElement("div");
-                mappingItem.classList.add("mapping-item");
-                mappingItem.dataset.domain = domain;
-
-                // Domain span
-                const domainSpan = document.createElement("span");
-                domainSpan.classList.add("mapping-item-domain");
-                domainSpan.textContent = cleanupMappingText(domain);
-
-                // Group span
-                const groupSpan = document.createElement("span");
-                groupSpan.classList.add("mapping-item-group");
-                groupSpan.textContent = cleanupMappingText(group);
-
-                // Color indicator
-                const colorSpan = document.createElement("span");
-                colorSpan.classList.add("mapping-item-color");
-                const groupColor = colors[group];
-                if (groupColor) {
-                    const colorInfo = COLOR_PALETTE.find((c) => c.value === groupColor);
-                    if (colorInfo) {
-                        colorSpan.style.backgroundColor = colorInfo.hex;
-                    }
-                }
-
-                // Add to mapping item
-                mappingItem.appendChild(domainSpan);
-                mappingItem.appendChild(groupSpan);
-                mappingItem.appendChild(colorSpan);
-
-                // Add click event for selection
-                mappingItem.addEventListener("click", (e) => {
-                    mappingItem.classList.toggle("selected");
-
-                    // Sync with hidden select for removal
-                    const option = Array.from(currentMappings.options).find((opt) => opt.value === domain);
-                    if (option) {
-                        option.selected = mappingItem.classList.contains("selected");
-                    }
-                });
-
-                // Add to mappings list
-                mappingsList.appendChild(mappingItem);
-
-                // Sync with hidden select for removal
-                const option = document.createElement("option");
-                option.value = domain;
-                option.textContent = `${cleanupMappingText(domain)} -> ${cleanupMappingText(group)}`;
-                currentMappings.appendChild(option);
-            }
-        });
-    }
     // Add new mapping
     addMappingBtn.addEventListener("click", () => {
         const domain = domainInput.value.trim();
@@ -141,11 +70,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 }
 
                 chrome.storage.sync.set(
+                    // Save the mappings
                     {
                         groupMappings: mappings,
                         groupColors: colors,
                     },
                     () => {
+                        // Refresh the mappings list and clear input fields
                         refreshMappings();
                         domainInput.value = "";
                         groupNameInput.value = "";
@@ -193,6 +124,79 @@ document.addEventListener("DOMContentLoaded", () => {
     // Initial refresh
     refreshMappings();
 });
+
+// Cleanup function for mapping display
+function cleanupMappingText(text) {
+    return text
+        .normalize("NFC")
+        .replace(/[^\w\s.:-]/g, "")
+        .trim();
+}
+
+// Refresh mappings list
+function refreshMappings() {
+    chrome.storage.sync.get(["groupMappings", "groupColors"], (result) => {
+        const mappings = result.groupMappings || {};
+        const colors = result.groupColors || {};
+
+        // Clear existing mappings
+        mappingsList.innerHTML = "";
+        currentMappings.innerHTML = "";
+
+        for (const [domain, group] of Object.entries(mappings)) {
+            // Create mapping item for visual list
+            const mappingItem = document.createElement("div");
+            mappingItem.classList.add("mapping-item");
+            mappingItem.dataset.domain = domain;
+
+            // Domain span
+            const domainSpan = document.createElement("span");
+            domainSpan.classList.add("mapping-item-domain");
+            domainSpan.textContent = cleanupMappingText(domain);
+
+            // Group span
+            const groupSpan = document.createElement("span");
+            groupSpan.classList.add("mapping-item-group");
+            groupSpan.textContent = cleanupMappingText(group);
+
+            // Color indicator
+            const colorSpan = document.createElement("span");
+            colorSpan.classList.add("mapping-item-color");
+            const groupColor = colors[group];
+            if (groupColor) {
+                const colorInfo = COLOR_PALETTE.find((c) => c.value === groupColor);
+                if (colorInfo) {
+                    colorSpan.style.backgroundColor = colorInfo.hex;
+                }
+            }
+
+            // Add to mapping item
+            mappingItem.appendChild(domainSpan);
+            mappingItem.appendChild(groupSpan);
+            mappingItem.appendChild(colorSpan);
+
+            // Add click event for selection
+            mappingItem.addEventListener("click", (e) => {
+                mappingItem.classList.toggle("selected");
+
+                // Sync with hidden select for removal
+                const option = Array.from(currentMappings.options).find((opt) => opt.value === domain);
+                if (option) {
+                    option.selected = mappingItem.classList.contains("selected");
+                }
+            });
+
+            // Add to mappings list
+            mappingsList.appendChild(mappingItem);
+
+            // Sync with hidden select for removal
+            const option = document.createElement("option");
+            option.value = domain;
+            option.textContent = `${cleanupMappingText(domain)} -> ${cleanupMappingText(group)}`;
+            currentMappings.appendChild(option);
+        }
+    });
+}
 
 // Listen for messages from background script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

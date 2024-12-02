@@ -1,12 +1,3 @@
-const DEFAULT_GROUP_COLORS = {
-    "youtube.com": "red",
-    "github.com": "blue",
-    "stackoverflow.com": "orange",
-    "wikipedia.org": "green",
-    "amazon.com": "yellow",
-    "google.com": "#2c2b28",
-};
-
 // Cached group mappings and colors to reduce storage access
 let cachedGroupMappings = null;
 let cachedGroupColors = null;
@@ -66,7 +57,12 @@ async function getGroupColors() {
 
     return new Promise((resolve) => {
         chrome.storage.sync.get(["groupColors"], (result) => {
-            cachedGroupColors = result.groupColors || DEFAULT_GROUP_COLORS;
+            cachedGroupColors = result.groupColors;
+            // if no colors are stored, initialize with empty object
+            if (!cachedGroupColors) {
+                cachedGroupColors = {};
+            }
+
             resolve(cachedGroupColors);
         });
     });
