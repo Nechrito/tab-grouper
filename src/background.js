@@ -158,12 +158,12 @@ async function moveSingleTabsToStart() {
     }
 }
 
-// Optimized grouping function with reduced complexity
 async function groupTabsByDomain() {
     try {
         const groupMappings = await getGroupMappings();
         const tabs = await chrome.tabs.query({ currentWindow: true });
         const domainGroups = new Map();
+        const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
         // Parallel domain extraction and group identification
         const groupTasks = tabs
@@ -174,20 +174,37 @@ async function groupTabsByDomain() {
 
                 const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
                 const groupName = groupMappings[domain] || trimmedDomain;
-                return { groupName, tabId: tab.id };
+                return { groupName, tabId: tab.id, domain };
             });
 
         const groupResults = await Promise.all(groupTasks);
 
-        // Organize tabs into groups
-        groupResults
-            .filter((result) => result !== null)
-            .forEach((result) => {
-                if (!domainGroups.has(result.groupName)) {
-                    domainGroups.set(result.groupName, []);
+        // First, check if any ungrouped tabs can be moved to existing groups
+        for (const result of groupResults.filter((r) => r !== null)) {
+            const existingGroup = existingGroups.find((group) => group.title.toLowerCase() === result.groupName.toLowerCase());
+
+            if (existingGroup) {
+                try {
+                    await chrome.tabs.group({
+                        tabIds: result.tabId,
+                        groupId: existingGroup.id,
+                    });
+                    // Remove this tab from further processing
+                    groupResults.splice(groupResults.indexOf(result), 1);
+                } catch (moveError) {
+                    console.error(`Error moving tab to existing group:`, moveError);
                 }
-                domainGroups.get(result.groupName).push(result.tabId);
-            });
+            }
+        }
+
+        // Organize remaining ungrouped tabs into groups
+        const remainingResults = groupResults.filter((result) => result !== null);
+        remainingResults.forEach((result) => {
+            if (!domainGroups.has(result.groupName)) {
+                domainGroups.set(result.groupName, []);
+            }
+            domainGroups.get(result.groupName).push(result.tabId);
+        });
 
         // Group tabs with more than one tab
         for (const [groupName, tabIds] of domainGroups.entries()) {
