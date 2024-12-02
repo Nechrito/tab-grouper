@@ -3,7 +3,7 @@ let cachedGroupMappings = null;
 let cachedGroupColors = null;
 
 // Optimized color generation with better distribution
-const COLOR_PALETTE = ["blue", "green", "purple", "red", "orange", "yellow", "pink", "cyan", "grey"];
+const COLOR_PALETTE = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 const colorCache = new Map();
 
 // Memoized domain extraction to reduce repeated parsing
@@ -158,6 +158,35 @@ async function moveSingleTabsToStart() {
     }
 }
 
+async function checkAndUngroupTab(tab) {
+    try {
+        // Check if the tab is in a group
+        if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+            // Get the domain of the current URL
+            const currentDomain = await getDomain(tab.url);
+
+            // Get the current group
+            const group = await chrome.tabGroups.get(tab.groupId);
+
+            // Check if the current domain matches the group title
+            const groupDomain = group.title.toLowerCase();
+            const normalizedCurrentDomain = currentDomain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
+
+            // If domains don't match, ungroup the tab
+            if (groupDomain !== normalizedCurrentDomain) {
+                try {
+                    await chrome.tabs.ungroup(tab.id);
+                } catch (ungroupError) {
+                    // Error ungrouping tab: Error: Tabs cannot be edited right now (user may be dragging a tab).
+                    console.error(`Error ungrouping tab ${tab.id}:`, ungroupError);
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Error checking tab group:", error);
+    }
+}
+
 async function groupTabsByDomain() {
     try {
         const groupMappings = await getGroupMappings();
@@ -223,6 +252,17 @@ async function groupTabsByDomain() {
     await moveSingleTabsToStart();
 }
 
+// Utility functions to manage group mappings
+function clearGroupMappings() {
+    chrome.storage.sync.remove("groupMappings");
+    cachedGroupMappings = {};
+}
+
+function resetGroupMappings() {
+    cachedGroupMappings = {};
+    chrome.storage.sync.set({ groupMappings: {} });
+}
+
 // Existing utility functions (hashCode, abbreviate)
 function hashCode(str) {
     let hash = 0;
@@ -246,39 +286,15 @@ function abbreviate(groupName) {
 const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 300);
 
 // Event Listeners with optimized handling
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete") {
+        debouncedGroupTabsByDomain();
+    }
+});
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === "complete") {
-        try {
-            // Check if the tab is in a group
-            if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-                // Get the domain of the current URL
-                const currentDomain = await getDomain(tab.url);
-
-                // Get the current group
-                const group = await chrome.tabGroups.get(tab.groupId);
-
-                // Check if the current domain matches the group title
-                const groupDomain = group.title.toLowerCase();
-                const normalizedCurrentDomain = currentDomain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
-
-                // If domains don't match, ungroup the tab
-                if (groupDomain !== normalizedCurrentDomain) {
-                    try {
-                        await chrome.tabs.ungroup(tabId);
-                    } catch (ungroupError) {
-                        console.error("Error ungrouping tab:", ungroupError);
-                    }
-                }
-            }
-        } catch (error) {
-            console.error("Error checking tab group:", error);
-        }
-
-        // Use a small delay to ensure tab removal is processed
-        setTimeout(removeEmptyGroups, 100);
-
-        // Group tabs after a short delay
-        debouncedGroupTabsByDomain();
+        await checkAndUngroupTab(tab);
     }
 });
 
