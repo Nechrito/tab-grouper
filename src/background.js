@@ -3,7 +3,7 @@ let cachedGroupMappings = null;
 let cachedGroupColors = null;
 
 // Debug mode flag to enable verbose logging
-let DEBUG_MODE = true;
+let DEBUG_MODE = false;
 
 // Initialize debug mode from storage
 chrome.storage.sync.get(['debugMode'], (result) => {
@@ -12,71 +12,11 @@ chrome.storage.sync.get(['debugMode'], (result) => {
 
 // Color palette for group colors
 const COLOR_PALETTE = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
-
-// Request queue implementation
-class OperationQueue {
-    constructor() {
-        this.queue = [];
-        this.processing = false;
-    }
-
-    async enqueue(operation) {
-        this.queue.push(operation);
-        if (!this.processing) {
-            await this.processQueue();
-        }
-    }
-
-    async processQueue() {
-        if (this.processing || this.queue.length === 0) return;
-        
-        this.processing = true;
-        while (this.queue.length > 0) {
-            const operation = this.queue.shift();
-            try {
-                await operation();
-            } catch (error) {
-                console.error('Queue operation failed:', error);
-            }
-        }
-        this.processing = false;
-    }
-}
-
-const tabOperationQueue = new OperationQueue();
-
-// Improved caching with TTL
-class Cache {
-    constructor(ttl = 5000) {
-        this.store = new Map();
-        this.ttl = ttl;
-    }
-
-    set(key, value) {
-        const expiresAt = Date.now() + this.ttl;
-        this.store.set(key, { value, expiresAt });
-    }
-
-    get(key) {
-        const entry = this.store.get(key);
-        if (!entry) return null;
-        if (Date.now() > entry.expiresAt) {
-            this.store.delete(key);
-            return null;
-        }
-        return entry.value;
-    }
-
-    clear() {
-        this.store.clear();
-    }
-}
-
-// Replace existing caches
-const domainCache = new Cache(30000); // 30 second TTL
-const colorCache = new Cache(60000);   // 1 minute TTL
+const colorCache = new Map();
 
 // Memoized domain extraction to reduce repeated parsing
+const domainCache = new Map();
+
 // Extract domain from URL and cache the result
 async function getDomain(url) {
     if (!url) return null;
@@ -173,7 +113,7 @@ async function generateColor(groupName) {
     }
 
     // Only use hash-based color if no color is explicitly set
-    if (colorCache.get(groupName)) {
+    if (colorCache.has(groupName)) {
         return colorCache.get(groupName);
     }
 
@@ -344,89 +284,82 @@ async function updateExistingGroups() {
         throw error;
     }
 }
-
-// Optimized group tabs function
 async function groupTabsByDomain() {
-    const startTime = performance.now();
-
     try {
+        // Early return if no tabs exist
         const tabs = await chrome.tabs.query({ currentWindow: true });
         if (tabs.length <= 1) return;
 
-        const [groupMappings, existingGroups] = await Promise.all([
-            getGroupMappings(),
-            chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT })
-        ]);
+        const groupMappings = await getGroupMappings();
+        const domainGroups = new Map();
 
-        // Batch process tabs
-        const batchSize = 5;
-        const ungroupedTabs = tabs.filter(tab => 
-            tab.url && !tab.pinned && 
-            tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE
-        );
+        const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
-        for (let i = 0; i < ungroupedTabs.length; i += batchSize) {
-            const batch = ungroupedTabs.slice(i, i + batchSize);
-            await tabOperationQueue.enqueue(async () => {
-                const domainPromises = batch.map(tab => getDomain(tab.url));
-                const domains = await Promise.all(domainPromises);
-                
-                const groupOperations = new Map();
-                
-                batch.forEach((tab, index) => {
-                    const domain = domains[index];
-                    if (!domain) return;
-                    
-                    const groupName = groupMappings[domain] || 
-                        domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
-                    
-                    if (!groupOperations.has(groupName)) {
-                        groupOperations.set(groupName, []);
-                    }
-                    groupOperations.get(groupName).push(tab.id);
-                });
+        // Use Promise.all with better error handling
+        const groupTasks = tabs
+            .filter((tab) => tab.url && !tab.pinned && tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
+            .map(async (tab) => {
+                try {
+                    const domain = await getDomain(tab.url);
+                    if (!domain) return null;
 
-                // Execute group operations
-                for (const [groupName, tabIds] of groupOperations) {
-                    if (tabIds.length >= 2) {
-                        const color = await generateColor(groupName);
-                        const title = groupName.length > 15 ? 
-                            abbreviate(groupName) : groupName;
-
-                        const group = await chrome.tabs.group({ tabIds });
-                        await chrome.tabGroups.update(group, { color, title });
-                    }
+                    const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
+                    return {
+                        groupName: groupMappings[domain] || trimmedDomain,
+                        tabId: tab.id,
+                        domain,
+                    };
+                } catch (error) {
+                    console.warn(`Skipping tab grouping for ${tab.url}`, error);
+                    return null;
                 }
             });
+
+        const groupResults = (await Promise.allSettled(groupTasks)).filter((result) => result.status === "fulfilled" && result.value !== null).map((result) => result.value);
+
+        // First, check if any ungrouped tabs can be moved to existing groups
+        for (const result of groupResults.filter((r) => r !== null)) {
+            const existingGroup = existingGroups.find((group) => group.title.toLowerCase() === result.groupName.toLowerCase());
+
+            if (existingGroup) {
+                try {
+                    await chrome.tabs.group({
+                        tabIds: result.tabId,
+                        groupId: existingGroup.id,
+                    });
+                    // Remove this tab from further processing
+                    groupResults.splice(groupResults.indexOf(result), 1);
+                } catch (moveError) {
+                    console.error(`Error moving tab to existing group:`, moveError);
+                }
+            }
         }
 
-        if (DEBUG_MODE) {
-            const duration = performance.now() - startTime;
-            console.debug(`Grouped tabs in ${duration.toFixed(2)}ms`);
-        }
+        // Organize remaining ungrouped tabs into groups
+        const remainingResults = groupResults.filter((result) => result !== null);
+        remainingResults.forEach((result) => {
+            if (!domainGroups.has(result.groupName)) {
+                domainGroups.set(result.groupName, []);
+            }
+            domainGroups.get(result.groupName).push(result.tabId);
+        });
 
+        // Group tabs with more than one tab
+        for (const [groupName, tabIds] of domainGroups.entries()) {
+            if (tabIds.length >= 2) {
+                const color = await generateColor(groupName);
+                const title = groupName.length > 15 ? abbreviate(groupName) : groupName;
+
+                const group = await chrome.tabs.group({ tabIds });
+                await chrome.tabGroups.update(group, { color, title });
+            }
+        }
     } catch (error) {
-        console.error("Tab grouping error:", error);
+        console.error("Comprehensive grouping error:", error);
     }
-}
 
-// Rate limiting utility
-const rateLimiter = {
-    lastCall: 0,
-    minInterval: 200,
-    queue: [],
-    
-    async execute(fn) {
-        const now = Date.now();
-        if (now - this.lastCall < this.minInterval) {
-            await new Promise(resolve => 
-                setTimeout(resolve, this.minInterval - (now - this.lastCall))
-            );
-        }
-        this.lastCall = Date.now();
-        return fn();
-    }
-};
+    await moveSingleTabs();
+}
 
 function abbreviate(groupName) {
     const words = groupName
@@ -440,121 +373,45 @@ function abbreviate(groupName) {
 const delay = 500;
 const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, delay);
 
-// Consolidated event listeners with error handling and rate limiting
-const EventHandler = {
-    // Track active listeners for cleanup
-    activeListeners: new Set(),
-
-    // Handle tab updates
-    async handleTabUpdate(tabId, changeInfo, tab) {
-        if (changeInfo.status !== "complete") return;
-        
-        try {
-            await rateLimiter.execute(async () => {
-                await checkAndUngroupTab(tab);
-                await debouncedGroupTabsByDomain();
-            });
-        } catch (error) {
-            console.error('Tab update handling failed:', error);
-        }
-    },
-
-    // Handle extension messages
-    async handleMessage(request, sender, sendResponse) {
-        try {
-            switch(request.action) {
-                case "groupTabs":
-                    await rateLimiter.execute(() => debouncedGroupTabsByDomain());
-                    break;
-                case "ungroupTabs":
-                    await rateLimiter.execute(() => ungroupAllTabs());
-                    break;
-            }
-        } catch (error) {
-            console.error('Message handling failed:', error);
-        }
-    },
-
-    // Handle tab removal
-    async handleTabRemoval() {
-        try {
-            await new Promise(resolve => setTimeout(resolve, 150));
-            await rateLimiter.execute(() => removeEmptyGroups());
-        } catch (error) {
-            console.error('Tab removal handling failed:', error);
-        }
-    },
-
-    // Handle storage changes
-    async handleStorageChange(changes, namespace) {
-        if (namespace !== "sync") return;
-        if (!changes.groupMappings && !changes.groupColors) return;
-
-        try {
-            await rateLimiter.execute(async () => {
-                await debouncedGroupTabsByDomain();
-                await updateExistingGroups();
-            });
-        } catch (error) {
-            console.error('Storage change handling failed:', error);
-        }
-    },
-
-    // Initialize all event listeners
-    init() {
-        // Tab update listener
-        const updateListener = (...args) => this.handleTabUpdate(...args);
-        chrome.tabs.onUpdated.addListener(updateListener);
-        this.activeListeners.add({ type: 'tabs.onUpdated', fn: updateListener });
-
-        // Message listener
-        const messageListener = (...args) => this.handleMessage(...args);
-        chrome.runtime.onMessage.addListener(messageListener);
-        this.activeListeners.add({ type: 'runtime.onMessage', fn: messageListener });
-
-        // Tab removal listener
-        const removalListener = () => this.handleTabRemoval();
-        chrome.tabs.onRemoved.addListener(removalListener);
-        this.activeListeners.add({ type: 'tabs.onRemoved', fn: removalListener });
-
-        // Storage change listener
-        const storageListener = (...args) => this.handleStorageChange(...args);
-        chrome.storage.onChanged.addListener(storageListener);
-        this.activeListeners.add({ type: 'storage.onChanged', fn: storageListener });
-
-        // Initial grouping
-        if (DEBUG_MODE) console.debug('Initializing event listeners');
+// Event Listeners with optimized handling
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete") {
         debouncedGroupTabsByDomain();
-    },
-
-    // Cleanup method
-    cleanup() {
-        for (const listener of this.activeListeners) {
-            switch (listener.type) {
-                case 'tabs.onUpdated':
-                    chrome.tabs.onUpdated.removeListener(listener.fn);
-                    break;
-                case 'runtime.onMessage':
-                    chrome.runtime.onMessage.removeListener(listener.fn);
-                    break;
-                case 'tabs.onRemoved':
-                    chrome.tabs.onRemoved.removeListener(listener.fn);
-                    break;
-                case 'storage.onChanged':
-                    chrome.storage.onChanged.removeListener(listener.fn);
-                    break;
-            }
-        }
-        this.activeListeners.clear();
     }
-};
-
-// Initialize event listeners
-chrome.runtime.onInstalled.addListener(() => {
-    EventHandler.init();
 });
 
-// Optional: Cleanup on extension unload
-chrome.runtime.onSuspend.addListener(() => {
-    EventHandler.cleanup();
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete") {
+        await checkAndUngroupTab(tab);
+    }
+});
+
+chrome.runtime.onMessage.addListener((request) => {
+    if (request.action === "groupTabs") {
+        debouncedGroupTabsByDomain();
+    }
+    if (request.action === "ungroupTabs") {
+        ungroupAllTabs();
+    }
+});
+
+const removeDelay = 150;
+
+// Update event listeners to use this function
+chrome.tabs.onRemoved.addListener(() => {
+    // Use a small delay to ensure tab removal is processed
+    
+    setTimeout(removeEmptyGroups, removeDelay);
+});
+
+// Optional: Initial grouping when extension loads
+chrome.runtime.onInstalled.addListener(debouncedGroupTabsByDomain);
+
+// Listen for storage changes to trigger group updates
+chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === "sync" && (changes.groupMappings || changes.groupColors)) {
+        // Debounce to prevent multiple rapid calls
+        debouncedGroupTabsByDomain();
+        updateExistingGroups();
+    }
 });
