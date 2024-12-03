@@ -9,47 +9,52 @@ const colorCache = new Map();
 // Memoized domain extraction to reduce repeated parsing
 const domainCache = new Map();
 
-// Logging function for debugging (only when needed)
-function logBrowserCapabilities() {
-    if (process.env.NODE_ENV === "development") {
-        console.log("Browser Capabilities:");
-        console.log("chrome object exists:", typeof chrome !== "undefined");
-        console.log("chrome.tabs exists:", typeof chrome.tabs !== "undefined");
-        console.log("chrome.tabGroups exists:", typeof chrome.tabGroups !== "undefined");
-    }
-}
-
-function getDomain(url) {
-    if (domainCache.has(url)) return Promise.resolve(domainCache.get(url));
+async function getDomain(url) {
+    if (!url) return null;
 
     try {
         const parsedUrl = new URL(url);
         const hostname = parsedUrl.hostname.replace(/^www\./, "");
         const domain = hostname.includes(".") ? hostname.split(".").slice(-2).join(".") : hostname;
 
-        domainCache.set(url, domain);
-        return Promise.resolve(domain);
+        // Validate domain before caching
+        if (domain) {
+            domainCache.set(url, domain);
+            return domain;
+        }
+        return null;
     } catch (error) {
-        console.error("Error extracting domain:", error);
-        return Promise.resolve(null);
+        console.warn(`Domain extraction failed for URL: ${url}`, error);
+        return null;
     }
 }
 
-// Cached group mappings to reduce storage access
-async function getGroupMappings() {
-    if (cachedGroupMappings) return cachedGroupMappings;
-
-    return new Promise((resolve) => {
-        chrome.storage.sync.get(["groupMappings"], (result) => {
-            cachedGroupMappings = result.groupMappings;
-
-            if (!cachedGroupMappings) {
-                cachedGroupMappings = {};
-            }
-
-            resolve(cachedGroupMappings);
+// Add a centralized storage management utility
+const StorageManager = {
+    async get(key, defaultValue = {}) {
+        return new Promise((resolve) => {
+            chrome.storage.sync.get([key], (result) => {
+                resolve(result[key] || defaultValue);
+            });
         });
-    });
+    },
+
+    async set(key, value) {
+        return new Promise((resolve, reject) => {
+            chrome.storage.sync.set({ [key]: value }, () => {
+                if (chrome.runtime.lastError) {
+                    reject(chrome.runtime.lastError);
+                } else {
+                    resolve();
+                }
+            });
+        });
+    },
+};
+
+// Replace existing storage calls with this utility
+async function getGroupMappings() {
+    return StorageManager.get("groupMappings");
 }
 
 async function getGroupColors() {
@@ -187,26 +192,79 @@ async function checkAndUngroupTab(tab) {
     }
 }
 
-async function groupTabsByDomain() {
+// Update existing groups' titles and colors based on new mappings
+async function updateExistingGroups() {
     try {
         const groupMappings = await getGroupMappings();
-        const tabs = await chrome.tabs.query({ currentWindow: true });
-        const domainGroups = new Map();
+        const groupColors = await getGroupColors();
         const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
-        // Parallel domain extraction and group identification
+        for (const group of existingGroups) {
+            const currentTitle = group.title.toLowerCase();
+
+            // Find a matching mapping where the group title matches a domain or group name
+            const matchingMapping = Object.entries(groupMappings).find(([domain, groupName]) => {
+                const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
+                return currentTitle === trimmedDomain || currentTitle === groupName.toLowerCase();
+            });
+
+            if (matchingMapping) {
+                const [domain, groupName] = matchingMapping;
+
+                // Determine the new title (abbreviated if long)
+                const newTitle = groupName.length > 15 ? abbreviate(groupName) : groupName;
+
+                // Get color for the group
+                const color = await generateColor(groupName);
+
+                // Update group title and color
+                try {
+                    await chrome.tabGroups.update(group.id, {
+                        title: newTitle,
+                        color: color,
+                    });
+                } catch (updateError) {
+                    console.error(`Error updating group ${group.id}:`, updateError);
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Error updating existing groups:", error);
+    }
+}
+
+async function groupTabsByDomain() {
+    try {
+        // Early return if no tabs exist
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        if (tabs.length <= 1) return;
+
+        const groupMappings = await getGroupMappings();
+        const domainGroups = new Map();
+
+        const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+
+        // Use Promise.all with better error handling
         const groupTasks = tabs
             .filter((tab) => tab.url && !tab.pinned && tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
             .map(async (tab) => {
-                const domain = await getDomain(tab.url);
-                if (!domain) return null;
+                try {
+                    const domain = await getDomain(tab.url);
+                    if (!domain) return null;
 
-                const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
-                const groupName = groupMappings[domain] || trimmedDomain;
-                return { groupName, tabId: tab.id, domain };
+                    const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
+                    return {
+                        groupName: groupMappings[domain] || trimmedDomain,
+                        tabId: tab.id,
+                        domain,
+                    };
+                } catch (error) {
+                    console.warn(`Skipping tab grouping for ${tab.url}`, error);
+                    return null;
+                }
             });
 
-        const groupResults = await Promise.all(groupTasks);
+        const groupResults = (await Promise.allSettled(groupTasks)).filter((result) => result.status === "fulfilled" && result.value !== null).map((result) => result.value);
 
         // First, check if any ungrouped tabs can be moved to existing groups
         for (const result of groupResults.filter((r) => r !== null)) {
@@ -246,21 +304,10 @@ async function groupTabsByDomain() {
             }
         }
     } catch (error) {
-        console.error("Error grouping tabs:", error);
+        console.error("Comprehensive grouping error:", error);
     }
 
     await moveSingleTabsToStart();
-}
-
-// Utility functions to manage group mappings
-function clearGroupMappings() {
-    chrome.storage.sync.remove("groupMappings");
-    cachedGroupMappings = {};
-}
-
-function resetGroupMappings() {
-    cachedGroupMappings = {};
-    chrome.storage.sync.set({ groupMappings: {} });
 }
 
 // Existing utility functions (hashCode, abbreviate)
@@ -315,3 +362,12 @@ chrome.tabs.onRemoved.addListener(() => {
 
 // Optional: Initial grouping when extension loads
 chrome.runtime.onInstalled.addListener(debouncedGroupTabsByDomain);
+
+// Listen for storage changes to trigger group updates
+chrome.storage.onChanged.addListener((changes, namespace) => {
+    if (namespace === "sync" && (changes.groupMappings || changes.groupColors)) {
+        // Debounce to prevent multiple rapid calls
+        debouncedGroupTabsByDomain();
+        updateExistingGroups();
+    }
+});

@@ -1,13 +1,13 @@
 const COLOR_PALETTE = [
-    { name: "Grey", value: "grey", hex: "#d9dce0" },
-    { name: "Blue", value: "blue", hex: "#4fb8fe" },
-    { name: "Red", value: "red", hex: "#ff767e" },
-    { name: "Yellow", value: "yellow", hex: "#ffd142" },
-    { name: "Green", value: "green", hex: "#00d18f" },
-    { name: "Pink", value: "pink", hex: "#ff70ce" },
-    { name: "Purple", value: "purple", hex: "#d97fff" },
-    { name: "Cyan", value: "cyan", hex: "#00e1ef" },
-    { name: "Orange", value: "orange", hex: "#ffa163" },
+    { name: "Grey", value: "grey", hex: "#D9DCE0" },
+    { name: "Blue", value: "blue", hex: "#4FB8FE" },
+    { name: "Red", value: "red", hex: "#FF767E" },
+    { name: "Yellow", value: "yellow", hex: "#FFD142" },
+    { name: "Green", value: "green", hex: "#00D18E" },
+    { name: "Pink", value: "pink", hex: "#FF71CF" },
+    { name: "Purple", value: "purple", hex: "#B73FE7" },
+    { name: "Cyan", value: "cyan", hex: "#00E1EF" },
+    { name: "Orange", value: "orange", hex: "#FFA161" },
 ];
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -27,7 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
         option.value = color.value;
         option.textContent = `${color.name}`;
         option.style.backgroundColor = color.hex;
-        option.style.color = "white";
+        option.style.color = color.name === "Grey" ? "black" : "white";
         colorInput.appendChild(option);
     });
 
@@ -133,6 +133,9 @@ function cleanupMappingText(text) {
 
 // Refresh mappings list
 function refreshMappings() {
+    const mappingsList = document.getElementById("mappingsList");
+    const currentMappings = document.getElementById("currentMappings");
+
     chrome.storage.sync.get(["groupMappings", "groupColors"], (result) => {
         const mappings = result.groupMappings || {};
         const colors = result.groupColors || {};
@@ -162,7 +165,7 @@ function refreshMappings() {
             colorSpan.classList.add("mapping-item-color");
             const groupColor = colors[group];
             if (groupColor) {
-                const colorInfo = COLOR_PALETTE.find((c) => c.value === groupColor);
+                const colorInfo = COLOR_PALETTE.find((color) => color.value === groupColor);
                 if (colorInfo) {
                     colorSpan.style.backgroundColor = colorInfo.hex;
                 }
