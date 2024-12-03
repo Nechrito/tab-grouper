@@ -2,13 +2,22 @@
 let cachedGroupMappings = null;
 let cachedGroupColors = null;
 
-// Optimized color generation with better distribution
+// Debug mode flag to enable verbose logging
+let DEBUG_MODE = false;
+
+// Initialize debug mode from storage
+chrome.storage.sync.get(['debugMode'], (result) => {
+    DEBUG_MODE = result.debugMode || false;
+});
+
+// Color palette for group colors
 const COLOR_PALETTE = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 const colorCache = new Map();
 
 // Memoized domain extraction to reduce repeated parsing
 const domainCache = new Map();
 
+// Extract domain from URL and cache the result
 async function getDomain(url) {
     if (!url) return null;
 
@@ -52,11 +61,12 @@ const StorageManager = {
     },
 };
 
-// Replace existing storage calls with this utility
+// Get group mappings from storage with caching
 async function getGroupMappings() {
     return StorageManager.get("groupMappings");
 }
 
+// Get group colors from storage with caching
 async function getGroupColors() {
     if (cachedGroupColors) return cachedGroupColors;
 
@@ -82,83 +92,119 @@ function debounce(func, delay) {
     };
 }
 
+// Hash code generation for color selection
+function hashCode(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = (hash << 5) - hash + char;
+        hash |= 0; // Convert to 32bit integer
+    }
+    return hash;
+}
+
+// Generate a color for a group based on the group name
 async function generateColor(groupName) {
     const groupColors = await getGroupColors();
 
-    // Check if a custom color is already defined for this group
+    // If there's already a color mapping, use it
     if (groupColors[groupName]) {
         return groupColors[groupName];
     }
 
-    // If no custom color, use the existing generation method
+    // Only use hash-based color if no color is explicitly set
     if (colorCache.has(groupName)) {
         return colorCache.get(groupName);
     }
 
+    // Generate hash-based color only for new groups without explicit color
     const hash = hashCode(groupName);
-    const colorIndex = Math.abs(hash) % COLOR_PALETTE.length;
-    const color = COLOR_PALETTE[colorIndex];
+    const color = COLOR_PALETTE[Math.abs(hash) % COLOR_PALETTE.length];
 
+    // Only cache the color, don't save to storage
+    // This allows popup.js to override with explicit color choices
     colorCache.set(groupName, color);
+
     return color;
 }
 
+// Remove empty groups after tab removal
 async function removeEmptyGroups() {
     try {
-        const tabs = await chrome.tabs.query({ currentWindow: true });
-        const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
-        const groupMappings = await getGroupMappings();
+        // Get all data in parallel
+        const [tabs, groups] = await Promise.all([
+            chrome.tabs.query({ currentWindow: true }),
+            chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT })
+        ]);
 
-        for (const group of groups) {
-            // Count tabs in this specific group
-            const tabsInGroup = tabs.filter((tab) => tab.groupId === group.id);
+        // Create map of group IDs to tab counts for faster lookup
+        const groupCounts = tabs.reduce((acc, tab) => {
+            if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
+                acc[tab.groupId] = (acc[tab.groupId] || 0) + 1;
+            }
+            return acc;
+        }, {});
 
-            // If group has fewer than 2 tabs, remove the group
-            if (tabsInGroup.length < 2) {
-                for (const tab of tabsInGroup) {
-                    try {
-                        // Ungroup the single remaining tab
-                        await chrome.tabs.ungroup(tab.id);
-                    } catch (ungroupError) {
-                        console.error(`Error ungrouping tab ${tab.id}:`, ungroupError);
-                    }
-                }
+        // Find groups with less than 2 tabs
+        const groupsToUngroup = groups.filter(group => 
+            (groupCounts[group.id] || 0) < 2
+        );
+
+        // Bulk ungroup operation for efficiency
+        if (groupsToUngroup.length) {
+            const tabsToUngroup = tabs.filter(tab => 
+                groupsToUngroup.some(group => group.id === tab.groupId)
+            ).map(tab => tab.id);
+
+            if (tabsToUngroup.length) {
+                await chrome.tabs.ungroup(tabsToUngroup);
             }
         }
     } catch (error) {
-        console.error("Error in removeEmptyGroups:", error);
+        console.error("Error in removeEmptyGroups:", error.message);
+        throw error; // Re-throw to allow caller to handle
     }
 }
 
-// Ungroup all tabs
+// Ungroup all tabs in the current window
 async function ungroupAllTabs() {
     try {
         const tabs = await chrome.tabs.query({ currentWindow: true });
-        const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
-
-        for (const group of groups) {
-            const tabsInGroup = tabs.filter((tab) => tab.groupId === group.id);
-            for (const tab of tabsInGroup) {
-                await chrome.tabs.ungroup(tab.id);
-            }
-        }
+   
+        // Ungroup all tabs in the current window
+        await Promise.all(tabs.map(tab => chrome.tabs.ungroup(tab.id)));
     } catch (error) {
         console.error("Error ungrouping tabs:", error);
     }
 }
 
-// Move single tabs without a group to the end
-async function moveSingleTabsToStart() {
-    try {
-        const tabs = await chrome.tabs.query({ currentWindow: true });
-        const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
 
-        for (const tab of tabs) {
-            if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) {
-                await chrome.tabs.move(tab.id, { index: -1 });
-            }
+
+async function moveSingleTabs() {
+    const startTime = performance.now();
+    try {
+        // Get all tabs in current window
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        
+        // Filter ungrouped tabs first
+        const ungroupedTabs = tabs.filter(
+            tab => tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE
+        );
+
+        if (ungroupedTabs.length === 0) return;
+
+        // Bulk move operation
+        await chrome.tabs.move(
+            ungroupedTabs.map(tab => tab.id),
+            { index: -1 }
+        );
+
+        if (DEBUG_MODE) {
+            const duration = performance.now() - startTime;
+            console.debug(`Moved ${ungroupedTabs.length} tabs in ${duration.toFixed(2)}ms`);
         }
-    } catch (error) {
+    }
+    catch (error) {
         console.error("Error moving single tabs:", error);
     }
 }
@@ -195,44 +241,49 @@ async function checkAndUngroupTab(tab) {
 // Update existing groups' titles and colors based on new mappings
 async function updateExistingGroups() {
     try {
-        const groupMappings = await getGroupMappings();
-        const groupColors = await getGroupColors();
-        const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+        // Fetch all data in parallel
+        const [groupMappings, groupColors, existingGroups] = await Promise.all([
+            getGroupMappings(),
+            getGroupColors(),
+            chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT })
+        ]);
 
-        for (const group of existingGroups) {
+        // Cache domain pattern for reuse
+        const domainPattern = /(\.com|\.se|\.net|\.org|\.io|\.dev)$/;
+        
+        // Prepare batch updates
+        const updates = existingGroups.map(async (group) => {
             const currentTitle = group.title.toLowerCase();
-
-            // Find a matching mapping where the group title matches a domain or group name
+            
+            // Find matching mapping
             const matchingMapping = Object.entries(groupMappings).find(([domain, groupName]) => {
-                const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
-                return currentTitle === trimmedDomain || currentTitle === groupName.toLowerCase();
+                const trimmedDomain = domain.replace(domainPattern, "").toLowerCase();
+                return currentTitle === trimmedDomain || 
+                       currentTitle === groupName.toLowerCase();
             });
 
             if (matchingMapping) {
-                const [domain, groupName] = matchingMapping;
-
-                // Determine the new title (abbreviated if long)
+                const [_, groupName] = matchingMapping;
                 const newTitle = groupName.length > 15 ? abbreviate(groupName) : groupName;
-
-                // Get color for the group
                 const color = await generateColor(groupName);
 
-                // Update group title and color
-                try {
-                    await chrome.tabGroups.update(group.id, {
-                        title: newTitle,
-                        color: color,
-                    });
-                } catch (updateError) {
-                    console.error(`Error updating group ${group.id}:`, updateError);
-                }
+                return chrome.tabGroups.update(group.id, {
+                    title: newTitle,
+                    color: color
+                }).catch(error => {
+                    console.error(`Failed to update group ${group.id}:`, error);
+                });
             }
-        }
+        }).filter(Boolean); // Remove undefined values
+
+        // Execute all updates in parallel
+        await Promise.allSettled(updates);
+
     } catch (error) {
         console.error("Error updating existing groups:", error);
+        throw error;
     }
 }
-
 async function groupTabsByDomain() {
     try {
         // Early return if no tabs exist
@@ -307,18 +358,7 @@ async function groupTabsByDomain() {
         console.error("Comprehensive grouping error:", error);
     }
 
-    await moveSingleTabsToStart();
-}
-
-// Existing utility functions (hashCode, abbreviate)
-function hashCode(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-        const char = str.charCodeAt(i);
-        hash = (hash << 5) - hash + char;
-        hash = hash & hash; // Convert to 32bit integer
-    }
-    return hash;
+    await moveSingleTabs();
 }
 
 function abbreviate(groupName) {
@@ -330,7 +370,8 @@ function abbreviate(groupName) {
 }
 
 // Debounced tab grouping to reduce unnecessary calls
-const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 300);
+const delay = 500;
+const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, delay);
 
 // Event Listeners with optimized handling
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -354,10 +395,13 @@ chrome.runtime.onMessage.addListener((request) => {
     }
 });
 
+const removeDelay = 150;
+
 // Update event listeners to use this function
 chrome.tabs.onRemoved.addListener(() => {
     // Use a small delay to ensure tab removal is processed
-    setTimeout(removeEmptyGroups, 100);
+    
+    setTimeout(removeEmptyGroups, removeDelay);
 });
 
 // Optional: Initial grouping when extension loads

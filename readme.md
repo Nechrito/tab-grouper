@@ -1,8 +1,9 @@
 # Tab Grouper Chrome Extension
 
-![Search Bar](./src/res/Search%20Bar.gif)
-
-<!-- ![Popup](./src/res/Popup.gif) -->
+<div style="display: flex; justify-content: space-between;">
+  <img src="./res/Popup.gif" alt="Popup" height="400px">
+  <img src="./res/Search%20Bar.gif" alt="Search Bar" height="300px">
+</div>
 
 ## Overview
 
@@ -51,20 +52,6 @@ This extension requires the following Chrome permissions:
 - `tabs`: To access and manage browser tabs
 - `storage`: To save custom group mappings
 - `tabGroups`: To create and manage tab groups
-
-## Development
-
-### Prerequisites
-
-- Node.js
-- Chrome Browser
-
-### Local Development
-
-1. Clone the repository
-2. Open Chrome's extension management page
-3. Enable "Developer mode"
-4. Load the extension directory
 
 ## Contributing
 
