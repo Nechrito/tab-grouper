@@ -178,9 +178,10 @@ async function ungroupAllTabs() {
     }
 }
 
-
-
 async function moveSingleTabs() {
+    
+    if (DEBUG_MODE) console.debug("Moving single tabs...");
+
     const startTime = performance.now();
     try {
         // Get all tabs in current window
@@ -193,11 +194,15 @@ async function moveSingleTabs() {
 
         if (ungroupedTabs.length === 0) return;
 
-        // Bulk move operation
-        await chrome.tabs.move(
-            ungroupedTabs.map(tab => tab.id),
-            { index: -1 }
-        );
+        const index = tabs.length - 1;
+
+        for (const tab of ungroupedTabs) {
+            try {
+                await chrome.tabs.move(tab.id, { index });
+            } catch (moveError) {
+                console.error(`Error moving tab ${tab.id}:`, moveError);
+            }
+        }
 
         if (DEBUG_MODE) {
             const duration = performance.now() - startTime;
@@ -351,6 +356,7 @@ async function groupTabsByDomain() {
                 const title = groupName.length > 15 ? abbreviate(groupName) : groupName;
 
                 const group = await chrome.tabs.group({ tabIds });
+
                 await chrome.tabGroups.update(group, { color, title });
             }
         }
@@ -358,7 +364,9 @@ async function groupTabsByDomain() {
         console.error("Comprehensive grouping error:", error);
     }
 
-    await moveSingleTabs();
+    // Move single tabs to the end after grouping is complete
+    // setTimeout(moveSingleTabs, 100);
+    moveSingleTabs();
 }
 
 function abbreviate(groupName) {
@@ -370,19 +378,20 @@ function abbreviate(groupName) {
 }
 
 // Debounced tab grouping to reduce unnecessary calls
-const delay = 500;
-const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, delay);
+const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 300);
+
 
 // Event Listeners with optimized handling
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === "complete") {
         debouncedGroupTabsByDomain();
     }
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete") {
-        await checkAndUngroupTab(tab);
+    // Ungroup tab if domain doesn't match group
+    if (changeInfo.url) {
+        checkAndUngroupTab(tab);
     }
 });
 
@@ -395,7 +404,7 @@ chrome.runtime.onMessage.addListener((request) => {
     }
 });
 
-const removeDelay = 150;
+const removeDelay = 100;
 
 // Update event listeners to use this function
 chrome.tabs.onRemoved.addListener(() => {
