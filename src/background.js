@@ -1,6 +1,71 @@
+
+// Request queue implementation
+class OperationQueue {
+    constructor() {
+        this.queue = [];
+        this.processing = false;
+    }
+
+    async enqueue(operation) {
+        this.queue.push(operation);
+        if (!this.processing) {
+            await this.processQueue();
+        }
+    }
+
+    async processQueue() {
+        if (this.processing || this.queue.length === 0) return;
+        
+        this.processing = true;
+        while (this.queue.length > 0) {
+            const operation = this.queue.shift();
+            try {
+                await operation();
+            } catch (error) {
+                console.error('Queue operation failed:', error);
+            }
+        }
+        this.processing = false;
+    }
+}
+
+const tabOperationQueue = new OperationQueue();
+
+class Cache {
+    constructor(ttl = 5000) { 
+        this.store = new Map();
+        this.ttl = ttl;
+    }
+
+    set(key, value) {
+        const expiresAt = Date.now() + this.ttl;
+        this.store.set(key, { value, expiresAt });
+    }
+
+    get(key) {
+        const entry = this.store.get(key);
+        if (!entry) return null;
+        if (Date.now() > entry.expiresAt) {
+            this.store.delete(key);
+            return null;
+        }
+        return entry.value;
+    }
+
+    clear() {
+        this.store.clear();
+    }
+}
+
 // Cached group mappings and colors to reduce storage access
-let cachedGroupMappings = null;
 let cachedGroupColors = null;
+
+// Color palette for group colors
+const COLOR_PALETTE = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+
+// Replace existing caches
+const domainCache = new Cache(60000); // 1 minute 
+const colorCache = new Cache(60000); // 1 minute
 
 // Debug mode flag to enable verbose logging
 let DEBUG_MODE = false;
@@ -10,12 +75,6 @@ chrome.storage.sync.get(['debugMode'], (result) => {
     DEBUG_MODE = result.debugMode || false;
 });
 
-// Color palette for group colors
-const COLOR_PALETTE = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
-const colorCache = new Map();
-
-// Memoized domain extraction to reduce repeated parsing
-const domainCache = new Map();
 
 // Extract domain from URL and cache the result
 async function getDomain(url) {
@@ -63,7 +122,7 @@ const StorageManager = {
 
 // Get group mappings from storage with caching
 async function getGroupMappings() {
-    return StorageManager.get("groupMappings");
+    return await StorageManager.get("groupMappings");
 }
 
 // Get group colors from storage with caching
@@ -113,7 +172,7 @@ async function generateColor(groupName) {
     }
 
     // Only use hash-based color if no color is explicitly set
-    if (colorCache.has(groupName)) {
+    if (colorCache.get(groupName)) {
         return colorCache.get(groupName);
     }
 
@@ -216,27 +275,28 @@ async function moveSingleTabs() {
 
 async function checkAndUngroupTab(tab) {
     try {
-        // Check if the tab is in a group
-        if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-            // Get the domain of the current URL
-            const currentDomain = await getDomain(tab.url);
+        // Skip if tab isn't in a group
+        if (tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return;
 
-            // Get the current group
-            const group = await chrome.tabGroups.get(tab.groupId);
+        // Get both domains in parallel
+        const [currentDomain, group] = await Promise.all([
+            getDomain(tab.url),
+            chrome.tabGroups.get(tab.groupId)
+        ]);
 
-            // Check if the current domain matches the group title
-            const groupDomain = group.title.toLowerCase();
-            const normalizedCurrentDomain = currentDomain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "").toLowerCase();
+        if (!currentDomain || !group) return;
 
-            // If domains don't match, ungroup the tab
-            if (groupDomain !== normalizedCurrentDomain) {
-                try {
-                    await chrome.tabs.ungroup(tab.id);
-                } catch (ungroupError) {
-                    // Error ungrouping tab: Error: Tabs cannot be edited right now (user may be dragging a tab).
-                    console.error(`Error ungrouping tab ${tab.id}:`, ungroupError);
-                }
-            }
+        // More precise domain matching
+        const groupDomain = group.title.toLowerCase();
+        const normalizedCurrentDomain = currentDomain
+            .replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "")
+            .toLowerCase();
+
+        // Only ungroup if domains definitely don't match
+        if (groupDomain !== normalizedCurrentDomain && 
+            !groupDomain.includes(normalizedCurrentDomain) && 
+            !normalizedCurrentDomain.includes(groupDomain)) {
+            await chrome.tabs.ungroup(tab.id);
         }
     } catch (error) {
         console.error("Error checking tab group:", error);
@@ -289,84 +349,63 @@ async function updateExistingGroups() {
         throw error;
     }
 }
+
 async function groupTabsByDomain() {
+    const startTime = performance.now();
+
     try {
-        // Early return if no tabs exist
         const tabs = await chrome.tabs.query({ currentWindow: true });
-        if (tabs.length <= 1) return;
 
-        const groupMappings = await getGroupMappings();
-        const domainGroups = new Map();
+        const [groupMappings, existingGroups] = await Promise.all([
+            getGroupMappings(),
+            chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT })
+        ]);
 
-        const existingGroups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+        // Group tabs by domain first
+        const tabsByDomain = new Map();
+        for (const tab of tabs) {
+            if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE || !tab.url) continue;
+            
+            const domain = await getDomain(tab.url);
+            if (!domain) continue;
 
-        // Use Promise.all with better error handling
-        const groupTasks = tabs
-            .filter((tab) => tab.url && !tab.pinned && tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE)
-            .map(async (tab) => {
-                try {
-                    const domain = await getDomain(tab.url);
-                    if (!domain) return null;
-
-                    const trimmedDomain = domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
-                    return {
-                        groupName: groupMappings[domain] || trimmedDomain,
-                        tabId: tab.id,
-                        domain,
-                    };
-                } catch (error) {
-                    console.warn(`Skipping tab grouping for ${tab.url}`, error);
-                    return null;
-                }
-            });
-
-        const groupResults = (await Promise.allSettled(groupTasks)).filter((result) => result.status === "fulfilled" && result.value !== null).map((result) => result.value);
-
-        // First, check if any ungrouped tabs can be moved to existing groups
-        for (const result of groupResults.filter((r) => r !== null)) {
-            const existingGroup = existingGroups.find((group) => group.title.toLowerCase() === result.groupName.toLowerCase());
-
-            if (existingGroup) {
-                try {
-                    await chrome.tabs.group({
-                        tabIds: result.tabId,
-                        groupId: existingGroup.id,
-                    });
-                    // Remove this tab from further processing
-                    groupResults.splice(groupResults.indexOf(result), 1);
-                } catch (moveError) {
-                    console.error(`Error moving tab to existing group:`, moveError);
-                }
+            const groupName = groupMappings[domain] || 
+                domain.replace(/(\.com|\.se|\.net|\.org|\.io|\.dev)$/, "");
+            
+            if (!tabsByDomain.has(groupName)) {
+                tabsByDomain.set(groupName, []);
             }
+            tabsByDomain.get(groupName).push(tab.id);
         }
 
-        // Organize remaining ungrouped tabs into groups
-        const remainingResults = groupResults.filter((result) => result !== null);
-        remainingResults.forEach((result) => {
-            if (!domainGroups.has(result.groupName)) {
-                domainGroups.set(result.groupName, []);
-            }
-            domainGroups.get(result.groupName).push(result.tabId);
-        });
-
-        // Group tabs with more than one tab
-        for (const [groupName, tabIds] of domainGroups.entries()) {
+        // Process each domain group
+        for (const [groupName, tabIds] of tabsByDomain) {
+            // Always group if more than one tab, regardless of batch
             if (tabIds.length >= 2) {
                 const color = await generateColor(groupName);
                 const title = groupName.length > 15 ? abbreviate(groupName) : groupName;
 
-                const group = await chrome.tabs.group({ tabIds });
-
-                await chrome.tabGroups.update(group, { color, title });
+                const existingGroup = existingGroups.find(group => group.title === groupName);
+                
+                if (existingGroup) {
+                    // Add tabs to existing group
+                    await chrome.tabs.group({ groupId: existingGroup.id, tabIds });
+                } else {
+                    // Create new group
+                    const newGroup = await chrome.tabs.group({ tabIds });
+                    await chrome.tabGroups.update(newGroup, { title, color });
+                }
             }
         }
-    } catch (error) {
-        console.error("Comprehensive grouping error:", error);
-    }
 
-    // Move single tabs to the end after grouping is complete
-    // setTimeout(moveSingleTabs, 100);
-    moveSingleTabs();
+        if (DEBUG_MODE) {
+            const duration = performance.now() - startTime;
+            console.debug(`Grouped tabs in ${duration.toFixed(2)}ms`);
+        }
+
+    } catch (error) {
+        console.error("Tab grouping error:", error);
+    }
 }
 
 function abbreviate(groupName) {
@@ -378,21 +417,35 @@ function abbreviate(groupName) {
 }
 
 // Debounced tab grouping to reduce unnecessary calls
-const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 300);
+const debouncedGroupTabsByDomain = debounce(groupTabsByDomain, 500);
 
-
-// Event Listeners with optimized handling
+// When a tab is fully loaded, check if it should be grouped
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (changeInfo.status === "complete") {
         debouncedGroupTabsByDomain();
     }
 });
 
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    // Ungroup tab if domain doesn't match group
+
+// Listen for tab updates to trigger grouping
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     if (changeInfo.url) {
-        checkAndUngroupTab(tab);
+        // Add to queue after grouping operations
+        tabOperationQueue.enqueue(async () => {
+            // Small delay to ensure grouping completes first
+            await new Promise(resolve => setTimeout(resolve, 50));
+            await checkAndUngroupTab(tab);
+        });
     }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
+    // Add to queue after grouping operations
+    tabOperationQueue.enqueue(async () => {
+        // Small delay to ensure grouping completes first
+        await new Promise(resolve => setTimeout(resolve, 50));
+        await removeEmptyGroups();
+    });
 });
 
 chrome.runtime.onMessage.addListener((request) => {
@@ -402,15 +455,6 @@ chrome.runtime.onMessage.addListener((request) => {
     if (request.action === "ungroupTabs") {
         ungroupAllTabs();
     }
-});
-
-const removeDelay = 100;
-
-// Update event listeners to use this function
-chrome.tabs.onRemoved.addListener(() => {
-    // Use a small delay to ensure tab removal is processed
-    
-    setTimeout(removeEmptyGroups, removeDelay);
 });
 
 // Optional: Initial grouping when extension loads
